@@ -7,11 +7,12 @@ from tqdm import tqdm
 import time
 import numpy as np
 import random
-from utils import *
-from Dataloader import CustomDataset, mnist_transform
-from model import Attention, Model, PatchEmbedding, MLP
+from .utils import *
+from .Dataloader import CustomDataset, mnist_transform
+from .model import Attention, Model, PatchEmbedding, MLP
 from QuintNet.TensorParallelism.utils import *
 from QuintNet.TensorParallelism.processgroup import *
+import sys
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, rank):
@@ -21,8 +22,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, rank):
     running_loss = 0.0
     correct = 0
     total = 0
-    
-    # Only show progress bar on rank 0
+
     if rank == 0:
         pbar = tqdm(train_loader, desc="Training")
     else:
@@ -35,24 +35,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, rank):
         optimizer.zero_grad()
         outputs = model(images)
         loss = criterion(outputs, labels)
-        loss.requires_grad = True
         loss.backward()
-        
-        # quick identity info
-        print(f"[rank{rank}] outputs.requires_grad={outputs.requires_grad}, outputs.grad_fn={outputs.grad_fn}")
-        # check local_out inside a ColumnParallelLinear — if you can access it easily, print it too:
-        # print("local_out.requires_grad", local_out.requires_grad)  # if you can fetch it
-
-        # Are grads None for parameters? print a few
-        for name, p in model.named_parameters():
-            if p.requires_grad:
-                print(f"[rank{rank}] {name}: device={p.device}, grad is None? {p.grad is None}")
-        # How many params does optimizer see?
-        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        opt_params = sum(p.numel() for group in optimizer.param_groups for p in group['params'])
-        print(f"[rank{rank}] total_params={total_params}, optimizer_params={opt_params}")
-
-        sys.exit()
         optimizer.step()
         
         running_loss += loss.item()
@@ -281,21 +264,14 @@ def main():
     tp_size = world_size   # using all GPUs for tensor parallelism
     model = apply_tensor_parallel(model, tp_size)
     
-    print(f"\n=== Gradient Debug (Rank {rank}) ===")
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            print(f"  {name}: requires_grad={param.requires_grad}, shape={param.shape}")
-
     # Force enable gradients on all parameters
     for param in model.parameters():
         param.requires_grad_(True)
-
-    print("=== Forced all parameters to require gradients ===\n")
     
     if rank == 0:
         total_params = sum(p.numel() for p in model.parameters())
         print(f"Model has {total_params:,} parameters")
-    
+        
     # Train
     start_time = time.time()
     results = train_model(

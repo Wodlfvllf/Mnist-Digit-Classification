@@ -1,4 +1,4 @@
-from utils import *
+from .utils import *
 
 class Attention(nn.Module):
     def __init__(self, hidden_dim, n_heads):
