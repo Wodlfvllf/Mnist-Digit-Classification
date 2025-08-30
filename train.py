@@ -4,9 +4,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import time
-from utils import *
-from Dataloader import CustomDataset, mnist_transform
-from model import Attention, Model, PatchEmbedding, MLP
+from .utils import *
+from .Dataloader import CustomDataset, mnist_transform
+from .model import Attention, Model, PatchEmbedding, MLP
 
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train model for one epoch."""
@@ -115,7 +115,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
 def main():
     # Configuration
     config = {
-        'dataset_path': '/workspace/datasets/mnist',
+        'dataset_path': '/workspace/Dataset/mnist',
         'batch_size': 64,
         'num_epochs': 10,
         'learning_rate': 0.001,

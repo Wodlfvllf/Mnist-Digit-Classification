@@ -10,8 +10,7 @@ import random
 from .utils import *
 from .Dataloader import CustomDataset, mnist_transform
 from .model import Attention, Model, PatchEmbedding, MLP
-from QuintNet.TensorParallelism.utils import *
-from QuintNet.TensorParallelism.processgroup import *
+from QuintNet.TensorParallelism import All_Gather, ColumnParallelLinear, apply_tensor_parallel, ProcessGroupManager
 import sys
 
 
@@ -22,14 +21,17 @@ def train_epoch(model, train_loader, criterion, optimizer, device, rank):
     running_loss = 0.0
     correct = 0
     total = 0
-
+    debug_freq=50
+    gradient_norms = []
+    output_stats = []
+    
     if rank == 0:
         pbar = tqdm(train_loader, desc="Training")
     else:
         pbar = train_loader
     
-    for batch in pbar:
-        images = batch['image'].to(device)
+    for batch_idx, batch in enumerate(pbar):
+        images = batch['image'].to(device)        
         labels = batch['label'].to(device)
         
         optimizer.zero_grad()
@@ -49,7 +51,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, rank):
                 'Loss': f'{running_loss/len(pbar):.4f}',
                 'Acc': f'{accuracy:.2f}%'
             })
-    
+            
     # Aggregate metrics across all ranks
     total_loss = torch.tensor(running_loss, device=device)
     total_correct = torch.tensor(correct, device=device)
@@ -121,8 +123,13 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     """Complete training loop with tensor parallelism support."""
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    
+    patience=3
+    min_improvement=0.01
+    rollback_on_decrease=True
     best_val_acc = 0.0
+    best_model_state = None
+    epochs_without_improvement = 0
+    consecutive_decreases = 0
     train_losses = []
     val_losses = []
     train_accs = []
@@ -143,12 +150,74 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
         val_losses.append(val_loss)
         val_accs.append(val_acc)
         
-        # Save best model (only on rank 0)
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            if rank == 0:
-                torch.save(model.state_dict(), 'best_model.pth')
+        # Check for improvement
+        improved = val_acc > best_val_acc + min_improvement
+        decreased = len(val_accs) > 1 and val_acc < val_accs[-2]
         
+        if improved:
+            best_val_acc = val_acc
+            epochs_without_improvement = 0
+            consecutive_decreases = 0
+            
+            # Save best model state (all ranks need this for potential rollback)
+            best_model_state = {
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'epoch': epoch,
+                'val_acc': val_acc
+            }
+            
+            if rank == 0:
+                torch.save(best_model_state, 'best_model.pth')
+                print(f"✓ New best model saved! Val Acc: {val_acc:.2f}%")
+                
+        else:
+            epochs_without_improvement += 1
+            
+            if decreased:
+                consecutive_decreases += 1
+                if rank == 0:
+                    print(f"⚠ Validation accuracy decreased: {val_accs[-2]:.2f}% → {val_acc:.2f}%")
+            else:
+                consecutive_decreases = 0
+        
+        # Rollback logic
+        if rollback_on_decrease and consecutive_decreases >= 2 and best_model_state is not None:
+            if rank == 0:
+                print(f"🔄 Rolling back to best model (epoch {best_model_state['epoch']+1}, acc: {best_model_state['val_acc']:.2f}%)")
+            
+            # Restore best model state on all ranks
+            model.load_state_dict(best_model_state['model_state_dict'])
+            optimizer.load_state_dict(best_model_state['optimizer_state_dict'])
+            
+            # Reset counters
+            consecutive_decreases = 0
+            epochs_without_improvement = 0
+            
+            # Optionally reduce learning rate after rollback
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.5
+            
+            if rank == 0:
+                print(f"📉 Reduced learning rate to {optimizer.param_groups[0]['lr']:.6f}")
+        
+        if rank == 0:
+            status = ""
+            if improved:
+                status = " 🎉 NEW BEST!"
+            elif decreased:
+                status = f" 📉 (-{val_accs[-2] - val_acc:.2f}%)"
+            
+            print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%{status}")
+            print(f"Best Val Acc: {best_val_acc:.2f}%, Patience: {patience - epochs_without_improvement}")
+    
+    # Load best model at the end
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state['model_state_dict'])
+        if rank == 0:
+            print(f"\n🏆 Training finished. Best model loaded (Val Acc: {best_val_acc:.2f}%)")
+
         if rank == 0:
             print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
             print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
@@ -180,10 +249,10 @@ def main():
     
     # Configuration
     config = {
-        'dataset_path': '/workspace/datasets/mnist',
+        'dataset_path': '/workspace/Dataset/mnist/',
         'batch_size': 64,
-        'num_epochs': 10,
-        'learning_rate': 0.001,
+        'num_epochs': 20,
+        'learning_rate': 0.0001,
         'num_workers': 4
     }
     
@@ -262,7 +331,7 @@ def main():
     
     # Apply tensor parallelism
     tp_size = world_size   # using all GPUs for tensor parallelism
-    model = apply_tensor_parallel(model, tp_size)
+    model = apply_tensor_parallel(model, tp_size, method_of_parallelism="column")
     
     # Force enable gradients on all parameters
     for param in model.parameters():
