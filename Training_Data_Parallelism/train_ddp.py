@@ -1,3 +1,7 @@
+"""
+Tensor parallel training implementation
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,16 +11,20 @@ from tqdm import tqdm
 import time
 import numpy as np
 import random
-from .utils import *
-from .Dataloader import CustomDataset, mnist_transform
-from .model import Attention, Model, PatchEmbedding, MLP
-from QuintNet.TensorParallelism import All_Gather, ColumnParallelLinear, apply_tensor_parallel, ProcessGroupManager
 import sys
+
+# Import from utilities package  
+from ..utilities.utils import *
+from ..utilities.Dataloader import CustomDataset, mnist_transform
+from ..utilities.model import Attention, Model, PatchEmbedding, MLP
+
+# Import tensor parallelism components
+from QuintNet.TensorParallelism import All_Gather, ColumnParallelLinear, apply_tensor_parallel, ProcessGroupManager
+
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, rank):
-    """Train model for one epoch witnvidia-smi
-    h tensor parallelism support."""
+    """Train model for one epoch with tensor parallelism support."""
     model.train()
     running_loss = 0.0
     correct = 0
@@ -249,7 +257,7 @@ def main():
     
     # Configuration
     config = {
-        'dataset_path': '/workspace/Dataset/mnist/',
+        'dataset_path': '/workspace/dataset/',
         'batch_size': 64,
         'num_epochs': 20,
         'learning_rate': 0.0001,

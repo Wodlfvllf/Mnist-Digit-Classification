@@ -4,9 +4,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import time
-from .utils import *
-from .Dataloader import CustomDataset, mnist_transform
-from .model import Attention, Model, PatchEmbedding, MLP
+
+# Import from utilities package
+from ..utilities.utils import *
+from ..utilities.Dataloader import CustomDataset, mnist_transform
+from ..utilities.model import Attention, Model, PatchEmbedding, MLP
+
 
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train model for one epoch."""
