@@ -21,6 +21,7 @@ from datetime import timedelta
 from ..utilities.utils import *
 from ..utilities.Dataloader import CustomDataset, mnist_transform
 from ..utilities.model import Attention, Model, PatchEmbedding, MLP
+from QuintNet.DataParallelsim.ddp_wrapper import CustomDDP
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, rank):
@@ -117,7 +118,7 @@ def validate(model, val_loader, criterion, device, rank):
 def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank):
     """Complete training loop with DDP support."""
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.model.parameters(), lr=learning_rate)
     
     # Training parameters
     patience = 3
@@ -298,6 +299,8 @@ def main():
     # Setup distributed training
     setup_ddp_v2(rank, world_size)
     
+    ddp_group = dist.new_group(ranks=list(range(dist.get_world_size())))
+    
     # Configuration
     config = {
         'dataset_path': '/workspace/dataset/',
@@ -388,8 +391,8 @@ def main():
     print(f"Rank {rank}: Model loaded.")
     
     # Wrap model with DDP
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
-    
+    model = CustomDDP(model, rank=rank, world_size=world_size, process_group = ddp_group, gradient_as_bucket_view=True)
+
     if rank == 0:
         total_params = sum(p.numel() for p in model.parameters())
         print(f"Model has {total_params:,} parameters")
