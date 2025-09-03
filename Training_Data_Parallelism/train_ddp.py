@@ -164,7 +164,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
                 
                 # Save best model state
                 best_model_state = {
-                    'model_state_dict': model.module.state_dict(),  # Use .module for DDP
+                    'model_state_dict': model.model.state_dict(),  # Use .module for DDP
                     'optimizer_state_dict': optimizer.state_dict(),
                     'epoch': epoch,
                     'val_acc': val_acc
@@ -201,7 +201,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
             
             # Load best model on rank 0 and broadcast to other ranks
             if rank == 0 and best_model_state is not None:
-                model.module.load_state_dict(best_model_state['model_state_dict'])
+                model.model.load_state_dict(best_model_state['model_state_dict'])
                 optimizer.load_state_dict(best_model_state['optimizer_state_dict'])
             
             # Synchronize model state across all ranks
@@ -238,7 +238,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     
     # Load best model at the end (only on rank 0, then broadcast)
     if rank == 0 and best_model_state is not None:
-        model.module.load_state_dict(best_model_state['model_state_dict'])
+        model.model.load_state_dict(best_model_state['model_state_dict'])
         print(f"\n🏆 Training finished. Best model loaded (Val Acc: {best_val_acc:.2f}%)")
     
     # Synchronize final model state across all ranks
