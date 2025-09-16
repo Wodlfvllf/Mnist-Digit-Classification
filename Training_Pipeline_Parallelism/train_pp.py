@@ -68,7 +68,41 @@ def validate(pipeline_trainer, val_loader, rank):
     avg_loss, avg_accuracy = pipeline_trainer.evaluate(val_loader)
     return avg_loss, avg_accuracy
 
+def print_debug_norms(model, rank, point_in_time: str):
+    """
+    Prints the L2 norm of the model's parameters and their gradients.
 
+    Args:
+        model: The local model module for the current rank.
+        rank: The rank of the current process.
+        point_in_time: A string describing when this is being called (e.g., "Before step").
+    """
+    total_param_norm = 0.0
+    total_grad_norm = 0.0
+    
+    # Ensure we only access parameters of the local stage
+    params = list(model.parameters())
+    if not params:
+        print(f"[DEBUG Rank {rank}] ({point_in_time}): No parameters on this rank.")
+        return
+
+    for p in params:
+        if p.requires_grad:
+            param_norm = p.detach().data.norm(2)
+            total_param_norm += param_norm.item() ** 2
+            
+            if p.grad is not None:
+                grad_norm = p.grad.detach().data.norm(2)
+                total_grad_norm += grad_norm.item() ** 2
+
+    total_param_norm = total_param_norm ** 0.5
+    total_grad_norm = total_grad_norm ** 0.5
+
+    print(f"[DEBUG Rank {rank}] ({point_in_time}): "
+          f"Param Norm = {total_param_norm:.4f}, "
+          f"Grad Norm = {total_grad_norm:.4f}")
+    
+    
 def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group):
     """Complete training loop with pipeline parallelism."""
     criterion = nn.CrossEntropyLoss()
@@ -76,11 +110,11 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     # Create PipelineParallelWrapper first
     pp_model = PipelineParallelWrapper(model, pp_group).to(device)
     
-    # Create optimizer for local parameters only
-    optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
+    # # Create optimizer for local parameters only
+    # optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
     
     # Create PipelineTrainer
-    pipeline_trainer = PipelineTrainer(pp_model, pp_group, optimizer, criterion, device)
+    pipeline_trainer = PipelineTrainer(pp_model, pp_group, criterion, device)
     
     # Training parameters
     patience = 5
@@ -95,6 +129,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     val_accs = []
     
     for epoch in range(num_epochs):
+        print_debug_norms(pp_model, rank, f"Start of Epoch {epoch+1}")
         if rank == 0:
             print(f"\nEpoch {epoch+1}/{num_epochs}")
             print("-" * 50)
@@ -122,7 +157,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
                 # Save best model state (local stage only)
                 best_model_state = {
                     'model_state_dict': pp_model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
+                    # 'optimizer_state_dict': optimizer.state_dict(),
                     'epoch': epoch,
                     'val_acc': val_acc
                 }
@@ -184,9 +219,29 @@ def main():
     # Initialize distributed
     dist.init_process_group(backend="nccl")
     
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    torch.cuda.set_device(rank)
+    # Get the global rank to set the device
+    global_rank = dist.get_rank()
+    
+    # 2. Set the CUDA device for this specific process. THIS IS CRITICAL.
+    torch.cuda.set_device(global_rank)
+    
+    # --- For your current setup ---
+    pp_size = 2
+    tp_size = 1 # You are not using tensor parallelism yet
+    
+    # 3. NOW that devices are set, create the subgroups.
+    print(f"Rank {global_rank}: Initializing ProcessGroupManager...")
+    pgm = ProcessGroupManager(pp_size=pp_size, tp_size=tp_size)
+    pp_group = pgm.get_pp_group()
+    
+    # Use the rank within the pipeline group for your logic
+    rank = pgm.get_pp_rank()
+    world_size = dist.get_world_size(pp_group) # This is your pipeline size
+    
+    device = torch.device(f"cuda:{rank}")
+    
+    print(f"Global Rank {global_rank} is Pipeline Rank {rank} on device {device}")
+    
     
     # Configuration
     config = {
@@ -269,10 +324,6 @@ def main():
         depth=8
         )
     
-    # Create pipeline parallel group
-    pp_size = world_size
-    pgm = ProcessGroupManager(pp_size)
-    pp_group = pgm.get_group()
     
     if rank == 0:
         # Count total parameters before splitting

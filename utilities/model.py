@@ -101,7 +101,18 @@ class TransformerBlock(nn.Module):
         x = self.norm(x)
         return x
 
+class ClassificationHead(nn.Module):
+    def __init__(self, hidden_dim, num_classes=10):
+        super().__init__()
+        self.down_proj = nn.Linear(hidden_dim, num_classes)
 
+    def forward(self, x):
+        # x is the full sequence from the last transformer block
+        # Select the output of the [CLS] token, which is at index 0
+        cls_out = x[:, 0]
+        # Pass it through the final linear layer
+        out = self.down_proj(cls_out)
+        return out
     
 class Model(nn.Module):
     def __init__(self, 
@@ -119,8 +130,7 @@ class Model(nn.Module):
 
         # now blocks are *real modules*
         self.blocks = nn.ModuleList([TransformerBlock(hidden_dim, n_heads) for _ in range(depth)])
-        
-        self.down_proj = nn.Linear(hidden_dim, 10)
+        self.classification_head = ClassificationHead(hidden_dim, num_classes=10)
 
     def forward(self, x):
         out = self.patch_embed(x)
