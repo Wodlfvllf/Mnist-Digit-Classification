@@ -56,9 +56,26 @@ def train_epoch(pipeline_trainer, train_loader, device, rank, pp_size):
     
     # Calculate averages (only meaningful on last rank)
     if rank == pp_size - 1 and num_batches > 0:
-        avg_loss = running_loss / num_batches
-        avg_accuracy = running_accuracy / num_batches
+        
         return avg_loss, avg_accuracy
+    else:
+        return None, None
+    
+def train_epoch_afab_optimised(pipeline_trainer, train_loader, device, rank, pgm, pp_size):
+    """Train model for one epoch with pipeline parallelism."""
+    pipeline_trainer.model.train()
+    loss, acc = pipeline_trainer.train_all_forward_and_backward_optimised(train_loader, pgm)
+    if rank == pp_size - 1:
+        return loss, acc
+    else:
+        return None, None
+    
+def train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size):
+    """Train model for one epoch with pipeline parallelism."""
+    pipeline_trainer.model.train()
+    loss, acc = pipeline_trainer.train_one_forward_one_backward(train_loader, pgm)
+    if rank == pp_size - 1:
+        return loss, acc
     else:
         return None, None
 
@@ -103,7 +120,7 @@ def print_debug_norms(model, rank, point_in_time: str):
           f"Grad Norm = {total_grad_norm:.4f}")
     
     
-def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group):
+def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group, pgm):
     """Complete training loop with pipeline parallelism."""
     criterion = nn.CrossEntropyLoss()
     
@@ -135,7 +152,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
             print("-" * 50)
         
         # Train
-        train_loss, train_acc = train_epoch(pipeline_trainer, train_loader, device, rank, pp_size)
+        train_loss, train_acc = train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size)
         
         # Validate
         val_loss, val_acc = validate(pipeline_trainer, val_loader, rank)
@@ -246,7 +263,7 @@ def main():
     # Configuration
     config = {
         'dataset_path': '/workspace/dataset/',
-        'batch_size': 128,
+        'batch_size': 16,
         'num_epochs': 20,
         'learning_rate': 0.0001,
         'num_workers': 4
@@ -341,7 +358,8 @@ def main():
         device,
         rank,
         pp_size,
-        pp_group
+        pp_group,
+        pgm
     )
     
     training_time = time.time() - start_time
