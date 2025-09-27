@@ -21,6 +21,31 @@ from ..utilities.model import Model
 from QuintNet.PipelineParallelism import PipelineParallelWrapper, ProcessGroupManager, PipelineTrainer
 
 
+# Debug utility functions
+def debug_model_partitioning(model_wrapper, rank):
+    """Debug model partitioning across stages"""
+    print(f"\n[PARTITION DEBUG Rank {rank}] Model Partitioning Analysis:")
+    
+    # Count parameters in local stage
+    local_params = sum(p.numel() for p in model_wrapper.local_module.parameters())
+    
+    # Gather parameter counts from all ranks
+    param_counts = [None] * model_wrapper.world_size
+    dist.all_gather_object(param_counts, local_params, group=model_wrapper.pp_group)
+    
+    if rank == 0:
+        total_params = sum(param_counts)
+        print(f"  Total parameters: {total_params:,}")
+        for stage_id, count in enumerate(param_counts):
+            percentage = (count / total_params) * 100
+            print(f"  Stage {stage_id}: {count:,} parameters ({percentage:.1f}%)")
+        
+        # Check balance
+        min_params = min(param_counts)
+        max_params = max(param_counts)
+        imbalance = (max_params - min_params) / min_params * 100
+        print(f"  Load imbalance: {imbalance:.1f}%")
+        
 def train_epoch(pipeline_trainer, train_loader, device, rank, pp_size):
     """Train model for one epoch with pipeline parallelism."""
     pipeline_trainer.model.train()
@@ -70,10 +95,10 @@ def train_epoch_afab_optimised(pipeline_trainer, train_loader, device, rank, pgm
     else:
         return None, None
     
-def train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size):
+def train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size, epoch):
     """Train model for one epoch with pipeline parallelism."""
     pipeline_trainer.model.train()
-    loss, acc = pipeline_trainer.train_one_forward_one_backward(train_loader, pgm)
+    loss, acc = pipeline_trainer.train_one_forward_one_backward(train_loader, pgm, epoch)
     if rank == pp_size - 1:
         return loss, acc
     else:
@@ -120,7 +145,7 @@ def print_debug_norms(model, rank, point_in_time: str):
           f"Grad Norm = {total_grad_norm:.4f}")
     
     
-def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group, pgm):
+def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group, pgm, debug_level=2):
     """Complete training loop with pipeline parallelism."""
     criterion = nn.CrossEntropyLoss()
     
@@ -152,7 +177,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
             print("-" * 50)
         
         # Train
-        train_loss, train_acc = train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size)
+        train_loss, train_acc = train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size, epoch)
         
         # Validate
         val_loss, val_acc = validate(pipeline_trainer, val_loader, rank)
