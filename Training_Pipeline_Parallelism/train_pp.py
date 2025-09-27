@@ -158,11 +158,11 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     for name, p in pp_model.local_module.named_parameters():
         if "attention.K.bias" in name:
             print(f"Rank {rank}: {name:<40} | requires_grad: {p.requires_grad}")
-    # # Create optimizer for local parameters only
-    # optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
+    # Create optimizer for local parameters only
+    optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
     
     # Create PipelineTrainer
-    pipeline_trainer = PipelineTrainer(pp_model, pp_group, criterion, device)
+    pipeline_trainer = PipelineTrainer(pp_model, pp_group, criterion, device, optimizer=optimizer)
     
     # Training parameters
     patience = 5
@@ -294,8 +294,8 @@ def main():
     # Configuration
     config = {
         'dataset_path': '/workspace/dataset/',
-        'batch_size': 16,
-        'num_epochs': 20,
+        'batch_size': 128,
+        'num_epochs': 1,
         'learning_rate': 0.0001,
         'num_workers': 4
     }

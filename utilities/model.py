@@ -53,13 +53,15 @@ class MLP(nn.Module):
         self.input_dim = input_dim
         
         self.down_proj = nn.Linear(input_dim,  64)
-        self.up_proj = nn.Linear(64,  input_dim)
         self.relu = nn.ReLU()
+        self.up_proj = nn.Linear(64,  input_dim)
         
     def forward(self, x):
         out = self.down_proj(x)
-        out = self.relu(out)
         out = self.up_proj(out)
+        out = self.relu(out)
+        
+        return out
         
         return out
     
