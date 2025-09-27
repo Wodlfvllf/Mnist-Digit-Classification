@@ -90,15 +90,15 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.attention = Attention(hidden_dim, n_heads)
         self.mlp = MLP(hidden_dim)
-        self.relu = nn.ReLU()
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        # Note: ReLU is usually inside the MLP, not outside. I've left it for now.
 
     def forward(self, x):
-        x = self.attention(x)
-        x = self.relu(x)
-        x = self.mlp(x)
-        x = self.relu(x)
-        x = self.norm(x)
+        # Apply the first residual connection
+        x = x + self.attention(self.norm1(x))
+        # Apply the second residual connection
+        x = x + self.mlp(self.norm2(x))
         return x
 
 class ClassificationHead(nn.Module):
@@ -114,37 +114,57 @@ class ClassificationHead(nn.Module):
         out = self.down_proj(cls_out)
         return out
     
+# You can add this to your model.py file
+
+class ViTEmbedding(nn.Module):
+    def __init__(self, img_size=28, patch_size=4, in_channels=1, hidden_dim=64):
+        super().__init__()
+        self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, hidden_dim)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        
+        # Calculate the number of patches correctly
+        num_patches = (img_size // patch_size) ** 2
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, hidden_dim))
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        out = self.patch_embed(x) # (B, N, D) where N is num_patches
+        B, N, D = out.shape
+
+        cls_tokens = self.cls_token.expand(B, -1, -1) # (B, 1, D)
+        out = torch.cat((cls_tokens, out), dim=1) # (B, N+1, D)
+        
+        # Add positional embedding
+        out = out + self.pos_embed
+        
+        return out
+    
 class Model(nn.Module):
     def __init__(self, 
-                img_size=32, 
+                img_size=28, 
                 patch_size=4, 
                 hidden_dim=64, 
-                in_channels=3, 
+                in_channels=1, 
                 n_heads=4, 
                 depth=4):
         super().__init__()
         
-        self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, hidden_dim)
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.n_patches+1, hidden_dim))
+        # Use the new, encapsulated embedding module
+        self.embedding = ViTEmbedding(img_size, patch_size, in_channels, hidden_dim)
 
-        # now blocks are *real modules*
         self.blocks = nn.ModuleList([TransformerBlock(hidden_dim, n_heads) for _ in range(depth)])
         self.classification_head = ClassificationHead(hidden_dim, num_classes=10)
 
     def forward(self, x):
-        out = self.patch_embed(x)
-        B, N, D = out.shape
-
-        cls_tokens = self.cls_token.expand(B, -1, -1)
-        out = torch.cat((cls_tokens, out), dim=1)
-        out = out + self.pos_embed[:, :N+1, :]
+        # The embedding logic is now cleanly handled in one module
+        out = self.embedding(x)
 
         for blk in self.blocks:
             out = blk(out)
 
-        cls_out = out[:, 0]
-        out = self.down_proj(cls_out)
+        # The classification head already correctly takes the CLS token
+        # Your previous code had a bug here `self.down_proj`, this is the fix
+        out = self.classification_head(out)
         return out
 
 

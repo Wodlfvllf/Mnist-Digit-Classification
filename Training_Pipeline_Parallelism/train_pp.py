@@ -86,10 +86,10 @@ def train_epoch(pipeline_trainer, train_loader, device, rank, pp_size):
     else:
         return None, None
     
-def train_epoch_afab_optimised(pipeline_trainer, train_loader, device, rank, pgm, pp_size):
+def train_epoch_afab_optimised(pipeline_trainer, train_loader, device, rank, pgm, pp_size, epoch):
     """Train model for one epoch with pipeline parallelism."""
     pipeline_trainer.model.train()
-    loss, acc = pipeline_trainer.train_all_forward_and_backward_optimised(train_loader, pgm)
+    loss, acc = pipeline_trainer.train_all_forward_and_backward_optimised(train_loader, pgm, epoch)
     if rank == pp_size - 1:
         return loss, acc
     else:
@@ -152,6 +152,12 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     # Create PipelineParallelWrapper first
     pp_model = PipelineParallelWrapper(model, pp_group).to(device)
     
+    if rank == 0:
+        print("\n--- Checking requires_grad status for all parameters ---")
+    # This check needs to be run on each rank for its local parameters
+    for name, p in pp_model.local_module.named_parameters():
+        if "attention.K.bias" in name:
+            print(f"Rank {rank}: {name:<40} | requires_grad: {p.requires_grad}")
     # # Create optimizer for local parameters only
     # optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
     
