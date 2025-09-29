@@ -150,7 +150,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     criterion = nn.CrossEntropyLoss()
     
     # Create PipelineParallelWrapper first
-    pp_model = PipelineParallelWrapper(model, pp_group).to(device)
+    pp_model = PipelineParallelWrapper(model, pgm).to(device)
     
     if rank == 0:
         print("\n--- Checking requires_grad status for all parameters ---")

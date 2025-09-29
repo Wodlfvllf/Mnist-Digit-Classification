@@ -153,7 +153,6 @@ class Model(nn.Module):
         
         # Use the new, encapsulated embedding module
         self.embedding = ViTEmbedding(img_size, patch_size, in_channels, hidden_dim)
-
         self.blocks = nn.ModuleList([TransformerBlock(hidden_dim, n_heads) for _ in range(depth)])
         self.classification_head = ClassificationHead(hidden_dim, num_classes=10)
 
