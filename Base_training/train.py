@@ -118,7 +118,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
 def main():
     # Configuration
     config = {
-        'dataset_path': '/workspace/Dataset/mnist',
+        'dataset_path': '/workspace/dataset/',
         'batch_size': 64,
         'num_epochs': 10,
         'learning_rate': 0.001,

@@ -98,7 +98,7 @@ def train_epoch_afab_optimised(pipeline_trainer, train_loader, device, rank, pgm
 def train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size, epoch):
     """Train model for one epoch with pipeline parallelism."""
     pipeline_trainer.model.train()
-    loss, acc = pipeline_trainer.train_one_forward_one_backward(train_loader, pgm, epoch)
+    loss, acc = pipeline_trainer.train_1f1b(train_loader, epoch)
     if rank == pp_size - 1:
         return loss, acc
     else:
@@ -143,28 +143,123 @@ def print_debug_norms(model, rank, point_in_time: str):
     print(f"[DEBUG Rank {rank}] ({point_in_time}): "
           f"Param Norm = {total_param_norm:.4f}, "
           f"Grad Norm = {total_grad_norm:.4f}")
+
+def verify_pipeline_split(pp_model, rank, pp_group):
+    """Verify that the pipeline split is correct."""
+    print(f"\n{'='*60}")
+    print(f"[Rank {rank}] Pipeline Split Verification")
+    print(f"{'='*60}")
+    
+    # Print local module structure
+    print(f"Local module type: {type(pp_model.local_module)}")
+    if isinstance(pp_model.local_module, nn.Sequential):
+        print(f"Sequential with {len(pp_model.local_module)} modules:")
+        for i, module in enumerate(pp_model.local_module):
+            print(f"  {i}: {type(module).__name__}")
+    else:
+        print(f"Single module: {type(pp_model.local_module).__name__}")
+    
+    # Count parameters
+    param_count = sum(p.numel() for p in pp_model.local_module.parameters())
+    print(f"Parameters: {param_count:,}")
+    
+    # Test with dummy data to verify shapes
+    if rank == 0:
+        # Test first stage with image input
+        dummy_input = torch.randn(2, 1, 28, 28).to(f'cuda:{rank}')
+        try:
+            with torch.no_grad():
+                output = pp_model(dummy_input)
+            print(f"Input shape: {dummy_input.shape}")
+            print(f"Output shape: {output.shape}")
+        except Exception as e:
+            print(f"❌ ERROR during forward: {e}")
+    else:
+        # Test subsequent stages - need to know expected input shape
+        # For ViT after embedding: [B, num_patches, hidden_dim]
+        num_patches = (28 // 4) ** 2  # 49 patches for 28x28 image with patch_size=4
+        dummy_input = torch.randn(2, num_patches, 64).to(f'cuda:{rank}')
+        try:
+            with torch.no_grad():
+                output = pp_model(dummy_input)
+            print(f"Input shape: {dummy_input.shape}")
+            print(f"Output shape: {output.shape}")
+            
+            # Last stage should output [B, num_classes]
+            if rank == 1:  # Last stage
+                expected_shape = (2, 10)  # 10 classes for MNIST
+                if output.shape != expected_shape:
+                    print(f"⚠️  WARNING: Expected output shape {expected_shape}, got {output.shape}")
+        except Exception as e:
+            print(f"❌ ERROR during forward: {e}")
+    
+    print(f"{'='*60}\n")
     
     
 def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group, pgm, debug_level=2):
     """Complete training loop with pipeline parallelism."""
     criterion = nn.CrossEntropyLoss()
     
-    # Create PipelineParallelWrapper first
+    # STEP 1: Synchronize initial weights
+    if rank == 0:
+        print("\n" + "="*60)
+        print("INITIALIZING PIPELINE PARALLEL TRAINING")
+        print("="*60)
+        print("Step 1: Synchronizing model weights across all ranks...")
+    
+    for param in model.parameters():
+        dist.broadcast(param.data, src=0, group=pp_group)
+    
+    dist.barrier(group=pp_group)
+    if rank == 0:
+        print("✓ Model weights synchronized\n")
+    
+    # STEP 2: Create PipelineParallelWrapper
+    if rank == 0:
+        print("Step 2: Creating pipeline parallel wrapper...")
     pp_model = PipelineParallelWrapper(model, pgm).to(device)
     
+    # STEP 3: Verify the split
+    verify_pipeline_split(pp_model, rank, pp_group)
+    dist.barrier(group=pp_group)
+    
+    # STEP 4: Verify data consistency
     if rank == 0:
-        print("\n--- Checking requires_grad status for all parameters ---")
-    # This check needs to be run on each rank for its local parameters
-    for name, p in pp_model.local_module.named_parameters():
-        if "attention.K.bias" in name:
-            print(f"Rank {rank}: {name:<40} | requires_grad: {p.requires_grad}")
-    # Create optimizer for local parameters only
+        print("Step 3: Verifying data consistency...")
+    
+    # Get first batch and check if all ranks have the same data
+    first_batch = next(iter(train_loader))
+    
+    # Check image hash
+    img_sum = first_batch['image'].sum().item()
+    label_sum = first_batch['label'].sum().item()
+    
+    img_sums = [None] * pp_size
+    label_sums = [None] * pp_size
+    dist.all_gather_object(img_sums, img_sum, group=pp_group)
+    dist.all_gather_object(label_sums, label_sum, group=pp_group)
+    
+    if rank == 0:
+        if len(set(img_sums)) == 1 and len(set(label_sums)) == 1:
+            print(f"✓ Data is consistent across all ranks")
+            print(f"  Image sum: {img_sums[0]:.4f}")
+            print(f"  Label sum: {label_sums[0]:.4f}")
+        else:
+            print(f"❌ WARNING: Data differs across ranks!")
+            print(f"  Image sums: {img_sums}")
+            print(f"  Label sums: {label_sums}")
+            print(f"  This will cause training to fail!")
+        print("="*60 + "\n")
+    
+    dist.barrier(group=pp_group)
+    
+    # Create optimizer for local parameters
     optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
     
-    # Create PipelineTrainer
-    pipeline_trainer = PipelineTrainer(pp_model, pp_group, criterion, device, optimizer=optimizer)
+    # Create PipelineTrainer  
+    pipeline_trainer = PipelineTrainer(pp_model, pp_group, criterion, device, optimizer=optimizer, max_grad_norm=1.0)
     
-    # Training parameters
+    # Rest of training loop stays the same...
     patience = 5
     min_improvement = 0.01
     best_val_acc = 0.0
@@ -177,7 +272,6 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
     val_accs = []
     
     for epoch in range(num_epochs):
-        print_debug_norms(pp_model, rank, f"Start of Epoch {epoch+1}")
         if rank == 0:
             print(f"\nEpoch {epoch+1}/{num_epochs}")
             print("-" * 50)
@@ -195,54 +289,41 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
             val_losses.append(val_loss)
             val_accs.append(val_acc)
             
-            # Check for improvement
             improved = val_acc > best_val_acc + min_improvement
             
             if improved:
                 best_val_acc = val_acc
                 epochs_without_improvement = 0
-                
-                # Save best model state (local stage only)
                 best_model_state = {
                     'model_state_dict': pp_model.state_dict(),
-                    # 'optimizer_state_dict': optimizer.state_dict(),
                     'epoch': epoch,
                     'val_acc': val_acc
                 }
-                
-                # Notify other ranks about improvement
                 improved_tensor = torch.tensor([1.0], device=device)
             else:
                 epochs_without_improvement += 1
                 improved_tensor = torch.tensor([0.0], device=device)
             
-            # Broadcast improvement status
             dist.broadcast(improved_tensor, src=pp_size-1, group=pp_group)
             
-            # Print metrics
             status = " 🎉 NEW BEST!" if improved else ""
             print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
             print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%{status}")
             print(f"Best Val Acc: {best_val_acc:.2f}%, Patience: {patience - epochs_without_improvement}")
             
-            # Early stopping check
             if epochs_without_improvement >= patience:
                 print(f"\n⚠ Early stopping triggered after {epoch+1} epochs")
                 break
         else:
-            # Other ranks wait for improvement signal
             improved_tensor = torch.tensor([0.0], device=device)
             dist.broadcast(improved_tensor, src=pp_size-1, group=pp_group)
         
-        # Synchronize all ranks
         dist.barrier(group=pp_group)
     
-    # Load best model if available
     if best_model_state is not None and rank == pp_size - 1:
         pp_model.load_state_dict(best_model_state['model_state_dict'])
         print(f"\n🏆 Training finished. Best model loaded (Val Acc: {best_val_acc:.2f}%)")
     
-    # Return results
     if rank == pp_size - 1:
         return {
             'train_losses': train_losses,
@@ -253,8 +334,18 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, devi
         }
     else:
         return None
-
-
+    
+    
+def synchronize_model_weights(model, rank, pp_group):
+    """Broadcast model weights from rank 0 to all ranks to ensure consistency."""
+    print(f"[Rank {rank}] Synchronizing model weights...")
+    
+    for param in model.parameters():
+        # Broadcast each parameter from rank 0
+        dist.broadcast(param.data, src=0, group=pp_group)
+    
+    print(f"[Rank {rank}] Model weights synchronized.")
+    
 def main():
     # Set seeds for reproducibility
     def set_seed(seed=42):
@@ -295,9 +386,9 @@ def main():
     config = {
         'dataset_path': '/workspace/dataset/',
         'batch_size': 128,
-        'num_epochs': 1,
+        'num_epochs': 10,
         'learning_rate': 0.0001,
-        'num_workers': 4
+        'num_workers': 1
     }
     
     device = torch.device(f"cuda:{rank}")
@@ -370,7 +461,7 @@ def main():
         in_channels=1,
         n_heads=4,
         depth=8
-        )
+        ).to(device)
     
     
     if rank == 0:
@@ -378,6 +469,13 @@ def main():
         total_params = sum(p.numel() for p in model.parameters())
         print(f"Total model parameters: {total_params:,}")
     
+    if rank == 0:
+        print("\n🔄 Synchronizing model weights across all pipeline stages...")
+    synchronize_model_weights(model, rank, pp_group)
+    dist.barrier(group=pp_group)  # Ensure all ranks finish synchronization
+    if rank == 0:
+        print("✓ Model weights synchronized.\n")
+        
     # Train model
     start_time = time.time()
     results = train_model(
@@ -406,3 +504,116 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    
+    
+
+
+# def train_model(model, train_loader, val_loader, num_epochs, learning_rate, device, rank, pp_size, pp_group, pgm, debug_level=2):
+#     """Complete training loop with pipeline parallelism."""
+#     criterion = nn.CrossEntropyLoss()
+    
+#     # Create PipelineParallelWrapper first
+#     pp_model = PipelineParallelWrapper(model, pgm).to(device)
+    
+#     if rank == 0:
+#         print("\n--- Checking requires_grad status for all parameters ---")
+#     # This check needs to be run on each rank for its local parameters
+#     for name, p in pp_model.local_module.named_parameters():
+#         if "attention.K.bias" in name:
+#             print(f"Rank {rank}: {name:<40} | requires_grad: {p.requires_grad}")
+#     # Create optimizer for local parameters only
+#     optimizer = optim.Adam(pp_model.parameters(), lr=learning_rate)
+    
+#     # Create PipelineTrainer
+#     pipeline_trainer = PipelineTrainer(pp_model, pp_group, criterion, device, optimizer=optimizer)
+    
+#     # Training parameters
+#     patience = 5
+#     min_improvement = 0.01
+#     best_val_acc = 0.0
+#     best_model_state = None
+#     epochs_without_improvement = 0
+    
+#     train_losses = []
+#     val_losses = []
+#     train_accs = []
+#     val_accs = []
+    
+#     for epoch in range(num_epochs):
+#         print_debug_norms(pp_model, rank, f"Start of Epoch {epoch+1}")
+#         if rank == 0:
+#             print(f"\nEpoch {epoch+1}/{num_epochs}")
+#             print("-" * 50)
+        
+#         # Train
+#         train_loss, train_acc = train_epoch_onef_oneb(pipeline_trainer, train_loader, device, rank, pgm, pp_size, epoch)
+        
+#         # Validate
+#         val_loss, val_acc = validate(pipeline_trainer, val_loader, rank)
+        
+#         # Only last rank has metrics
+#         if rank == pp_size - 1:
+#             train_losses.append(train_loss)
+#             train_accs.append(train_acc)
+#             val_losses.append(val_loss)
+#             val_accs.append(val_acc)
+            
+#             # Check for improvement
+#             improved = val_acc > best_val_acc + min_improvement
+            
+#             if improved:
+#                 best_val_acc = val_acc
+#                 epochs_without_improvement = 0
+                
+#                 # Save best model state (local stage only)
+#                 best_model_state = {
+#                     'model_state_dict': pp_model.state_dict(),
+#                     # 'optimizer_state_dict': optimizer.state_dict(),
+#                     'epoch': epoch,
+#                     'val_acc': val_acc
+#                 }
+                
+#                 # Notify other ranks about improvement
+#                 improved_tensor = torch.tensor([1.0], device=device)
+#             else:
+#                 epochs_without_improvement += 1
+#                 improved_tensor = torch.tensor([0.0], device=device)
+            
+#             # Broadcast improvement status
+#             dist.broadcast(improved_tensor, src=pp_size-1, group=pp_group)
+            
+#             # Print metrics
+#             status = " 🎉 NEW BEST!" if improved else ""
+#             print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+#             print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%{status}")
+#             print(f"Best Val Acc: {best_val_acc:.2f}%, Patience: {patience - epochs_without_improvement}")
+            
+#             # Early stopping check
+#             if epochs_without_improvement >= patience:
+#                 print(f"\n⚠ Early stopping triggered after {epoch+1} epochs")
+#                 break
+#         else:
+#             # Other ranks wait for improvement signal
+#             improved_tensor = torch.tensor([0.0], device=device)
+#             dist.broadcast(improved_tensor, src=pp_size-1, group=pp_group)
+        
+#         # Synchronize all ranks
+#         dist.barrier(group=pp_group)
+    
+#     # Load best model if available
+#     if best_model_state is not None and rank == pp_size - 1:
+#         pp_model.load_state_dict(best_model_state['model_state_dict'])
+#         print(f"\n🏆 Training finished. Best model loaded (Val Acc: {best_val_acc:.2f}%)")
+    
+#     # Return results
+#     if rank == pp_size - 1:
+#         return {
+#             'train_losses': train_losses,
+#             'val_losses': val_losses,
+#             'train_accs': train_accs,
+#             'val_accs': val_accs,
+#             'best_val_acc': best_val_acc
+#         }
+#     else:
+#         return None
