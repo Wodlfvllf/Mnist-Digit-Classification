@@ -391,7 +391,7 @@ def main():
     print(f"Rank {rank}: Model loaded.")
     
     # Wrap model with DDP
-    model = CustomDDP(model, rank=rank, world_size=world_size, process_group = ddp_group, gradient_as_bucket_view=True)
+    model = CustomDDP(model)
 
     if rank == 0:
         total_params = sum(p.numel() for p in model.parameters())
