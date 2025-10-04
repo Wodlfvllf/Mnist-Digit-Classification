@@ -704,62 +704,66 @@ def synchronize_model_weights(model, rank, pp_group):
 
 
 def train_epoch(pipeline_trainer, pipeline_loader, tensor_shapes, device, dtype, rank, pp_size, epoch, schedule):
-    """Train one epoch."""
+    """Train one epoch with accuracy tracking."""
     pipeline_trainer.model.train()
     
-    # Choose training schedule
-    if schedule == "afab":
-        loss = pipeline_trainer.train_step_afab(
-            pipeline_loader, tensor_shapes, device, dtype
-        )
-    else:  # 1f1b
-        loss = pipeline_trainer.train_step_1f1b(
-            pipeline_loader, tensor_shapes, device, dtype
-        )
-    
-    return loss if rank == pp_size - 1 else None
-
-
-def validate(model, val_loader, criterion, device, rank, pp_size):
-    """Validate the model."""
-    model.eval()
+    num_batches = len(pipeline_loader) // pipeline_loader.grad_acc_steps
     total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
+    total_acc = 0.0
     
-    with torch.no_grad():
-        for batch in val_loader:
-            images = batch['image'].to(device)
-            labels = batch['label'].to(device)
-            
-            # Only first stage processes images
-            if rank == 0:
-                outputs = model(images)
-                # Send to next stage if not last
-                if pp_size > 1:
-                    # Communication would happen here in full implementation
-                    pass
-            
-            # Last stage computes loss
-            if rank == pp_size - 1:
-                # In full implementation, would receive outputs
-                if rank == 0:  # Single GPU case
-                    loss = criterion(outputs, labels)
-                    _, predicted = torch.max(outputs, 1)
-                    total_loss += loss.item() * images.size(0)
-                    total_correct += (predicted == labels).sum().item()
-                    total_samples += images.size(0)
+    # Progress bar only on last rank
+    if rank == pp_size - 1:
+        pbar = tqdm(range(num_batches), desc=f"Training Epoch {epoch+1}")
     
-    if rank == pp_size - 1 and total_samples > 0:
-        avg_loss = total_loss / total_samples
-        avg_accuracy = (total_correct / total_samples) * 100
-        return avg_loss, avg_accuracy
+    for step in range(num_batches):
+        # Choose training schedule
+        if schedule == "afab":
+            loss, acc = pipeline_trainer.train_step_afab(
+                pipeline_loader, tensor_shapes, device, dtype
+            )
+        else:  # 1f1b
+            loss, acc = pipeline_trainer.train_step_1f1b(
+                pipeline_loader, tensor_shapes, device, dtype
+            )
+        
+        # Accumulate metrics (only on last rank)
+        if rank == pp_size - 1:
+            if loss is not None:
+                total_loss += loss
+                total_acc += acc
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'Loss': f'{loss:.4f}',
+                'Acc': f'{acc:.2f}%'
+            })
+            pbar.update(1)
+    
+    if rank == pp_size - 1:
+        pbar.close()
+        avg_loss = total_loss / num_batches
+        avg_acc = total_acc / num_batches
+        return avg_loss, avg_acc
     
     return None, None
 
 
+def validate(pipeline_trainer, val_loader, tensor_shapes, device, dtype, rank, pp_size):
+    """Validate the model with accuracy tracking."""
+    pipeline_trainer.model.eval()
+    
+    val_loss, val_acc = pipeline_trainer.evaluate(
+        val_loader, 
+        tensor_shapes, 
+        device, 
+        dtype
+    )
+    
+    return val_loss, val_acc
+
+
 def train_model(config, pgm):
-    """Main training function."""
+    """Main training function with accuracy tracking."""
     rank = pgm.get_pp_rank()
     pp_size = pgm.get_pp_world_size()
     pp_group = pgm.get_pp_group()
@@ -861,13 +865,18 @@ def train_model(config, pgm):
     best_val_acc = 0.0
     epochs_without_improvement = 0
     
+    train_losses = []
+    train_accs = []
+    val_losses = []
+    val_accs = []
+    
     for epoch in range(config['num_epochs']):
         if rank == 0:
             print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
             print("-" * 50)
         
         # Train
-        train_loss = train_epoch(
+        train_loss, train_acc = train_epoch(
             pipeline_trainer,
             pipeline_train_loader,
             tensor_shapes,
@@ -880,32 +889,73 @@ def train_model(config, pgm):
         )
         
         # Validate
-        val_loss, val_acc = validate(pp_model, val_loader, criterion, device, rank, pp_size)
+        val_loss, val_acc = validate(
+            pipeline_trainer,
+            val_loader,
+            tensor_shapes,
+            device,
+            dtype,
+            rank,
+            pp_size
+        )
         
-        # Print metrics
+        # Print metrics and track best model
         if rank == pp_size - 1:
+            # Store metrics
             if train_loss is not None:
-                print(f"Train Loss: {train_loss:.4f}")
-            if val_loss is not None and val_acc is not None:
-                improved = val_acc > best_val_acc
-                status = " 🎉 NEW BEST!" if improved else ""
-                print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%{status}")
-                
-                if improved:
-                    best_val_acc = val_acc
-                    epochs_without_improvement = 0
-                else:
-                    epochs_without_improvement += 1
-                
-                # Early stopping
-                if epochs_without_improvement >= config['patience']:
-                    print(f"\n⚠ Early stopping triggered")
-                    break
+                train_losses.append(train_loss)
+                train_accs.append(train_acc)
+            
+            if val_loss is not None:
+                val_losses.append(val_loss)
+                val_accs.append(val_acc)
+            
+            # Print metrics
+            print(f"\n{'='*50}")
+            print(f"Epoch {epoch+1} Results:")
+            print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
+            print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.2f}%")
+            
+            # Check for improvement
+            improved = val_acc > best_val_acc
+            if improved:
+                best_val_acc = val_acc
+                epochs_without_improvement = 0
+                print(f"  🎉 New Best Validation Accuracy!")
+            else:
+                epochs_without_improvement += 1
+            
+            print(f"  Best Val Acc: {best_val_acc:.2f}%")
+            print(f"  Patience: {config['patience'] - epochs_without_improvement}/{config['patience']}")
+            print(f"{'='*50}")
+            
+            # Early stopping
+            if epochs_without_improvement >= config['patience']:
+                print(f"\n⚠ Early stopping triggered")
+                break
         
         dist.barrier(group=pp_group)
     
+    # Print final results
     if rank == pp_size - 1:
-        print(f"\n🏆 Training completed. Best Val Acc: {best_val_acc:.2f}%")
+        print(f"\n{'='*60}")
+        print("TRAINING COMPLETED")
+        print(f"{'='*60}")
+        print(f"Best Validation Accuracy: {best_val_acc:.2f}%")
+        print(f"Final Train Accuracy: {train_accs[-1]:.2f}%")
+        print(f"Final Val Accuracy: {val_accs[-1]:.2f}%")
+        print(f"{'='*60}\n")
+        
+        return {
+            'train_losses': train_losses,
+            'train_accs': train_accs,
+            'val_losses': val_losses,
+            'val_accs': val_accs,
+            'best_val_acc': best_val_acc
+        }
+    
+    return None
+
 
 
 def main():
