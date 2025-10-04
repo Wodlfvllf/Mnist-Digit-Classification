@@ -303,7 +303,7 @@ def main():
     
     # Configuration
     config = {
-        'dataset_path': '/workspace/dataset/',
+        'dataset_path': '/mnt/dataset/mnist/',
         'batch_size': 64,  # Per GPU batch size
         'num_epochs': 20,
         'learning_rate': 0.0001,
