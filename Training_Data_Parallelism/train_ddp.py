@@ -21,7 +21,7 @@ from datetime import timedelta
 from ..utilities.utils import *
 from ..utilities.Dataloader import CustomDataset, mnist_transform
 from ..utilities.model import Attention, Model, PatchEmbedding, MLP
-from QuintNet.DataParallelsim.ddp_wrapper import CustomDDP
+from QuintNet.DataParallelsim import CustomDDP
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, rank):
@@ -292,7 +292,7 @@ def set_seed(seed=42):
 def main():
     # Get distributed training parameters
     rank = int(os.environ.get('LOCAL_RANK', 0))
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    world_size = 4  # Assuming 4 GPUs for this example
     
     print(f"Rank {rank}: Setting up DDP...")
     
