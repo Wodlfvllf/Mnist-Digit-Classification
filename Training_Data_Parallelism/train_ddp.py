@@ -383,7 +383,7 @@ def main():
         img_size=28, 
         patch_size=4, 
         hidden_dim=64, 
-        in_channels=1, 
+        in_channels=1,
         n_heads=4,
         depth=4
     ).to(device)
