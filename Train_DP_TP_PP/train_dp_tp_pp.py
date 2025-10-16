@@ -87,7 +87,7 @@ def synchronize_model_weights(model, pp_group):
 
     for param in model.parameters():
         # Broadcast from rank 0 of the pipeline group
-        dist.broadcast(param.data, src=0, group=pp_group)
+        dist.broadcast(param.data, group_src=0, group=pp_group)
 
     dist.barrier(group=pp_group)
 
