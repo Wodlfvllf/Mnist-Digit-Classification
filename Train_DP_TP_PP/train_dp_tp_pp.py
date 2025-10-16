@@ -22,12 +22,21 @@ from utilities.utils import *
 from utilities.Dataloader import CustomDataset, mnist_transform
 from utilities.model import Model
 
+# Import tensor parallelism components
+from QuintNet.TensorParallelism import All_Gather, ColumnParallelLinear, apply_tensor_parallel, ProcessGroupManager
+
+#Import Data parallelsim components
+from QuintNet.DataParallelsim import CustomDDP
+
 # Import pipeline parallelism components
 from QuintNet.PipelineParallelism import (
     ProcessGroupManager,
     PipelineParallelWrapper,
     PipelineTrainer
 )
+
+#Import From Source
+from QuintNet.src import init_mesh, MeshGenerator
 
 
 class PipelineDataLoader:
@@ -142,7 +151,7 @@ def validate(pipeline_trainer, val_loader, tensor_shapes, device, dtype, rank, p
     return val_loss, val_acc
 
 
-def train_model(config, pgm):
+def train_model(config, device_mesh):
     """Main training function with accuracy tracking."""
     rank = pgm.get_pp_rank()
     pp_size = pgm.get_pp_world_size()
@@ -345,9 +354,13 @@ def main():
     global_rank = dist.get_rank()
     torch.cuda.set_device(global_rank)
     
-    # Create process group manager
-    pp_size = int(os.environ.get("PP_SIZE", 4))
-    pgm = ProcessGroupManager(pp_size=pp_size, tp_size=1)
+    # Create mesh for effective communication
+    device_mesh = init_mesh(
+        device_type='cuda',
+        mesh_dim=(2,2,2),
+        mesh_name=('dp', 'tp', 'pp')
+    )
+    
     
     # Configuration
     config = {
@@ -370,14 +383,10 @@ def main():
     
     # Train
     start_time = time.time()
-    train_model(config, pgm)
-    
-    if pgm.get_pp_rank() == 0:
-        elapsed = time.time() - start_time
-        print(f"\nTotal time: {elapsed//60:.0f}m {elapsed%60:.0f}s")
+    train_model(config, device_mesh)
     
     # Cleanup
-    dist.barrier(group=pgm.get_pp_group())
+    # dist.barrier()
     dist.destroy_process_group()
 
 
