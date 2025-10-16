@@ -153,10 +153,14 @@ def validate(pipeline_trainer, val_loader, tensor_shapes, device, dtype, rank, p
 
 def train_model(config, device_mesh):
     """Main training function with accuracy tracking."""
-    rank = pgm.get_pp_rank()
-    pp_size = pgm.get_pp_world_size()
-    pp_group = pgm.get_pp_group()
-    device = torch.device(f"cuda:{rank}")
+    # rank = pgm.get_pp_rank()
+    # pp_size = pgm.get_pp_world_size()
+    # pp_group = pgm.get_pp_group()
+    # device = torch.device(f"cuda:{rank}")
+    global_rank = dist.get_rank()
+    group_name = device_mesh.get_group_by_global_rank(global_rank)
+    process_group = device_mesh.get_group(group_name)
+    
     
     if rank == 0:
         print("\n" + "="*60)
