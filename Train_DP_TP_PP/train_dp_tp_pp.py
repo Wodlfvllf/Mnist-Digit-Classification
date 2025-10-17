@@ -425,19 +425,20 @@ def train_model(config, device_mesh):
     optimizer = optim.Adam(dp_model.parameters(), lr=config['learning_rate'])
     criterion = nn.CrossEntropyLoss()
     
-    # Create pipeline trainer
-    pipeline_trainer = PipelineTrainer(
-        dp_model,
-        pp_group,
-        criterion,
-        device,
-        optimizer=optimizer,
-        max_grad_norm=config['max_grad_norm']
-    )
-    
     data_loader_for_training = train_loader
     
     if config['mesh_dim'][2] > 1:
+        # Create pipeline trainer
+        pipeline_trainer = PipelineTrainer(
+            dp_model,
+            device_mesh,
+            pp_rank,
+            pp_group,
+            criterion,
+            device,
+            optimizer=optimizer,
+            max_grad_norm=config['max_grad_norm']
+        )
         # Create pipeline dataloader
         data_loader_for_training = PipelineDataLoader(train_loader, config['grad_acc_steps'])
         metrics = run_pp_training_loop(
