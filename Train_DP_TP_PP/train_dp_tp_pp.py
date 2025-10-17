@@ -333,7 +333,7 @@ def train_model(config, device_mesh):
     tp_group = device_mesh.get_group('tp')
     pp_group = device_mesh.get_group('pp')
 
-    coords = device_mesh.get_coordinate()
+    coords = device_mesh.get_coordinates_tensor_search(global_rank)
     dp_rank = coords[0]  # Assuming mesh order is ('dp', 'tp', 'pp')
     tp_rank = coords[1]
     pp_rank = coords[2]
@@ -402,6 +402,7 @@ def train_model(config, device_mesh):
         config['mesh_dim'][1], 
         tp_rank,
         tp_group,
+        device,
         gather_output=True, 
         sync_gradients=True, 
         method_of_parallelism="column"
