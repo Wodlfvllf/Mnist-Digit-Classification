@@ -966,7 +966,7 @@ def main():
     torch.cuda.set_device(global_rank)
     
     # Create process group manager
-    pp_size = int(os.environ.get("PP_SIZE", 4))
+    pp_size = int(os.environ.get("PP_SIZE", 2))
     pgm = ProcessGroupManager(pp_size=pp_size, tp_size=1)
     
     # Configuration
