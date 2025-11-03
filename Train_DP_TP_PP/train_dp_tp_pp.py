@@ -13,6 +13,7 @@ import numpy as np
 import random
 import os
 import sys
+from torch.utils.data.distributed import DistributedSampler
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -338,6 +339,7 @@ def train_model(config, device_mesh):
     tp_rank = coords[1]
     pp_rank = coords[2]
     pp_size = config['mesh_dim'][2]
+    dp_size = config['mesh_dim'][0]
         
     # Set seeds
     set_seed(42)
@@ -357,11 +359,27 @@ def train_model(config, device_mesh):
     # Create dataloaders
     def worker_init_fn(worker_id):
         set_seed(42 + worker_id)
+
+
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=dp_size,
+        rank=dp_rank,
+        shuffle=True,
+        seed=42
+    )
+    val_sampler = DistributedSampler(
+        val_dataset,
+        num_replicas=dp_size,
+        rank=dp_rank,
+        shuffle=False,
+        seed=42
+    )
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
-        shuffle=True,
+        sampler=train_sampler,
         num_workers=config['num_workers'],
         worker_init_fn=worker_init_fn,
         persistent_workers=True if config['num_workers'] > 0 else False,
@@ -373,7 +391,7 @@ def train_model(config, device_mesh):
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
-        shuffle=False,
+        sampler=val_sampler,
         num_workers=config['num_workers'],
         drop_last=False,
         pin_memory=True
