@@ -121,6 +121,11 @@ class ClassificationHead(nn.Module):
 class ViTEmbedding(nn.Module):
     def __init__(self, img_size=28, patch_size=4, in_channels=1, hidden_dim=64):
         super().__init__()
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+        self.batch_size = None
         self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, hidden_dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         
@@ -132,6 +137,7 @@ class ViTEmbedding(nn.Module):
         # x: (B, C, H, W)
         out = self.patch_embed(x) # (B, N, D) where N is num_patches
         B, N, D = out.shape
+        self.batch_size = B 
 
         cls_tokens = self.cls_token.expand(B, -1, -1) # (B, 1, D)
         out = torch.cat((cls_tokens, out), dim=1) # (B, N+1, D)
