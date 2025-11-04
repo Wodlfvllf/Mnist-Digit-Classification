@@ -464,7 +464,7 @@ def train_model(config, device_mesh):
             pipeline_trainer,
             data_loader_for_training,
             val_loader,
-            pp_model.get_tensor_shapes(),
+            pp_model.get_tensor_shapes(config['batch_size']),
             torch.float32,
             device,
             pp_rank,
