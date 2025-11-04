@@ -90,6 +90,8 @@ class PatchEmbedding(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, hidden_dim, n_heads):
         super().__init__()
+        self.hidden_dim = hidden_dim
+        self.n_heads = n_heads
         self.attention = Attention(hidden_dim, n_heads)
         self.mlp = MLP(hidden_dim)
         self.norm1 = nn.LayerNorm(hidden_dim)
