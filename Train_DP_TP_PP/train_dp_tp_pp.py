@@ -14,9 +14,10 @@ import random
 import os
 import sys
 from torch.utils.data.distributed import DistributedSampler
+from ..tests import run_all_tests
 
 # Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import from utilities
 from utilities.utils import *
@@ -530,6 +531,8 @@ def main():
         mesh_dim=config['mesh_dim'],
         mesh_name=config['mesh_name']
     )
+    
+    run_all_tests(device_mesh)
     
     # Train
     start_time = time.time()
